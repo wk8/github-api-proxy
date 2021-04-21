@@ -1,0 +1,5 @@
+config.yml
+
+/github-api-proxy
+/pkg/internal/mock_pkg
+/coverage.out
