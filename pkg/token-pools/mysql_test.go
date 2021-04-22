@@ -339,11 +339,11 @@ func truncateTable(t *testing.T, pool *mysqlTokenPool) {
 func withTimeMock(t *testing.T, times ...int64) func() {
 	backup := timeNowUnix
 
-	nextIndex := -1
+	index := -1
 	timeNowUnix = func() int64 {
-		nextIndex++
-		require.True(t, nextIndex < len(times))
-		return times[nextIndex]
+		index++
+		require.True(t, index < len(times))
+		return times[index]
 	}
 
 	return func() {
