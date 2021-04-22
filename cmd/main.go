@@ -3,13 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
-
-	"github.com/wk8/github-api-proxy/pkg"
-
-	"github.com/wk8/github-api-proxy/version"
+	"time"
 
 	"github.com/jessevdk/go-flags"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/wk8/github-api-proxy/pkg"
+	"github.com/wk8/github-api-proxy/version"
 )
 
 var opts struct {
@@ -38,6 +38,15 @@ func main() {
 		log.Fatalf("Unable to build token pool: %v", err)
 	}
 
+	tokensRefreshInterval := time.Minute
+	refreshTokens := func() {
+		log.Info("Refreshing tokens")
+		if err := tokenPool.CheckInTokens(tokensRefreshInterval); err != nil {
+			log.Errorf("Error refreshing tokens: %v", err)
+		}
+	}
+	refreshTokens()
+
 	upstreamBaseURL, err := config.upstreamBaseURL()
 	if err != nil {
 		log.Fatalf("Invalid ustream base URL config: %v", err)
@@ -58,7 +67,7 @@ func main() {
 
 	if config.MITMProxyConfig != nil {
 		if config.MITMProxyConfig.TLSConfig == nil {
-			log.Fatalf("MITM proxies must define a TLS config")
+			log.Fatal("MITM proxies must define a TLS config")
 		}
 
 		proxy := pkg.NewMITMProxy(requestHandler)
@@ -69,8 +78,15 @@ func main() {
 	}
 
 	if running == 0 {
-		log.Fatalf("No explicit_proxy nor mitm_proxy config, nothing to do!")
+		log.Fatal("No explicit_proxy nor mitm_proxy config, nothing to do!")
 	}
+
+	// periodic refresh of tokens
+	go func() {
+		for range time.Tick(tokensRefreshInterval) {
+			refreshTokens()
+		}
+	}()
 
 	for running != 0 {
 		err := <-errChan
@@ -80,7 +96,7 @@ func main() {
 		running--
 	}
 
-	log.Infof("Shutting down")
+	log.Info("Shutting down")
 }
 
 func parseArgs() {

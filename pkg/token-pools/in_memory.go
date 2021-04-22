@@ -19,7 +19,7 @@ func init() {
 			if config != nil {
 				return nil, errors.Errorf("memory pool tokens don't accept any config")
 			}
-			return NewTokenPoolMemoryStorage(), nil
+			return newTokenPoolMemoryStorage(), nil
 		},
 		func() interface{} {
 			return nil
@@ -27,9 +27,8 @@ func init() {
 	)
 }
 
-// TODO wkpo make private?
-// InMemoryTokenPool is an in-memory, local implementation of TokenPoolStorageBackend
-type InMemoryTokenPool struct {
+// inMemoryTokenPool is an in-memory, local implementation of TokenPoolStorageBackend
+type inMemoryTokenPool struct {
 	tokens map[string]*tokenWithRemainingCount
 
 	// each token in data appears exactly once in either of these 2 maps, at all times
@@ -41,22 +40,22 @@ type InMemoryTokenPool struct {
 	mutex sync.Mutex
 }
 
-var _ TokenPoolStorageBackend = &InMemoryTokenPool{}
+var _ TokenPoolStorageBackend = &inMemoryTokenPool{}
 
 type tokenWithRemainingCount struct {
 	*types.TokenSpec
 	remaining int
 }
 
-func NewTokenPoolMemoryStorage() *InMemoryTokenPool {
-	return &InMemoryTokenPool{
+func newTokenPoolMemoryStorage() *inMemoryTokenPool {
+	return &inMemoryTokenPool{
 		tokens:           make(map[string]*tokenWithRemainingCount),
 		checkedInTokens:  make(map[string]bool),
 		checkedOutTokens: orderedmap.New(),
 	}
 }
 
-func (t *InMemoryTokenPool) EnsureTokensAre(tokens ...*types.TokenSpec) error {
+func (t *inMemoryTokenPool) EnsureTokensAre(tokens ...*types.TokenSpec) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -86,7 +85,7 @@ func (t *InMemoryTokenPool) EnsureTokensAre(tokens ...*types.TokenSpec) error {
 	return nil
 }
 
-func (t *InMemoryTokenPool) CheckOutToken() (*types.TokenSpec, error) {
+func (t *inMemoryTokenPool) CheckOutToken() (*types.TokenSpec, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -105,7 +104,7 @@ func (t *InMemoryTokenPool) CheckOutToken() (*types.TokenSpec, error) {
 	return t.tokens[token].TokenSpec, nil
 }
 
-func (t *InMemoryTokenPool) UpdateTokenUsage(token string, remaining int) error {
+func (t *inMemoryTokenPool) UpdateTokenUsage(token string, remaining int) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -115,7 +114,7 @@ func (t *InMemoryTokenPool) UpdateTokenUsage(token string, remaining int) error 
 	return nil
 }
 
-func (t *InMemoryTokenPool) UpdateTokenRateLimit(token string, rateLimit int) error {
+func (t *inMemoryTokenPool) UpdateTokenRateLimit(token string, rateLimit int) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -125,7 +124,7 @@ func (t *InMemoryTokenPool) UpdateTokenRateLimit(token string, rateLimit int) er
 	return nil
 }
 
-func (t *InMemoryTokenPool) CheckInTokens(gracePeriod time.Duration) error {
+func (t *inMemoryTokenPool) CheckInTokens(gracePeriod time.Duration) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -151,7 +150,7 @@ func (t *InMemoryTokenPool) CheckInTokens(gracePeriod time.Duration) error {
 	return nil
 }
 
-func (t *InMemoryTokenPool) EstimateTotalRemainingCalls() (int, error) {
+func (t *inMemoryTokenPool) EstimateTotalRemainingCalls() (int, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 

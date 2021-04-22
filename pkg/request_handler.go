@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -29,10 +30,19 @@ const (
 
 	rateLimitHeader              = "x-ratelimit-limit"
 	remainingCallsHeader         = "x-ratelimit-remaining"
+	resetTimestampHeader         = "x-ratelimit-reset"
 	throttledRequestErrorMessage = "API rate limit exceeded"
 
 	proxyErrorResponseBody = "unexpected proxy error"
+
+	// we don't use token this close to their reset timestamp, to allow for some clock drift between servers
+	resetIntervalErrorMarginSeconds = int64(60)
 )
+
+// easier to mock, for tests
+var timeNowUnix = func() int64 {
+	return time.Now().Unix()
+}
 
 type RequestHandlerI interface {
 	// ProxyRequest should take any request, transparently proxy any request that's not made
@@ -70,6 +80,9 @@ type tokenInUse struct {
 	remainingCalls int
 	// when the remaining calls count gets below this threshold, we need to report to the pool
 	nextRemainingCallsReportingThreshold int
+	// once past the reset, we need to stop using this token, let the pool check it back in on its own,
+	// and ask for another one from the pool
+	resetTimestamp int64
 
 	mutex sync.Mutex
 }
@@ -190,9 +203,9 @@ func (h *RequestHandler) makeGithubAPIRequest(request *http.Request) (response *
 		defer token.mutex.Unlock()
 
 		if processHeaders {
-			// sanity check on the rate limit
-			h.checkRateLimitHeader(response, token)
+			h.processRateLimitHeader(response, token)
 			h.processRemainingCallsHeader(response, token)
+			h.processResetTimestampHeader(response, token)
 		}
 
 		tokenExhausted = isThrottled || token.remainingCalls <= 0
@@ -214,7 +227,12 @@ func (h *RequestHandler) ensureToken() (*tokenInUse, error) {
 	defer h.currentTokenMutex.Unlock()
 
 	if h.currentToken != nil {
-		return h.currentToken, nil
+		if timeNowUnix() >= h.currentToken.resetTimestamp-resetIntervalErrorMarginSeconds {
+			// can't use this token any more, the pool will check it back in shortly
+			h.currentToken = nil
+		} else {
+			return h.currentToken, nil
+		}
 	}
 
 	token, err := h.tokenPool.CheckOutToken()
@@ -228,6 +246,7 @@ func (h *RequestHandler) ensureToken() (*tokenInUse, error) {
 	h.currentToken = &tokenInUse{
 		TokenSpec:      token,
 		remainingCalls: token.ExpectedRateLimit,
+		resetTimestamp: timeNowUnix() + int64(token_pools.ResetInterval.Seconds()),
 	}
 	// no need to hold that token's lock, we just created it, and no one can
 	// access it until we release the handler's lock
@@ -244,8 +263,9 @@ func shouldIncludeTokenInfoHeaders(response *http.Response) bool {
 }
 
 // assumes the caller holds the token's lock
-func (h *RequestHandler) checkRateLimitHeader(response *http.Response, token *tokenInUse) {
-	rateLimit, err := getHeaderIntValue(response, rateLimitHeader)
+func (h *RequestHandler) processRateLimitHeader(response *http.Response, token *tokenInUse) {
+	rateLimit64, err := getHeaderIntValue(response, rateLimitHeader)
+	rateLimit := int(rateLimit64)
 
 	if err != nil {
 		// no need to crash for this, this is just best effort
@@ -268,7 +288,7 @@ func (h *RequestHandler) processRemainingCallsHeader(response *http.Response, to
 	remainingCalls, err := getHeaderIntValue(response, remainingCallsHeader)
 
 	if err == nil {
-		token.remainingCalls = remainingCalls
+		token.remainingCalls = int(remainingCalls)
 	} else {
 		// no remaining calls header in the response, let's try a best effort approach...
 		log.Errorf("Unable to get remaining calls for token %s: %v", token.redacted(), err)
@@ -287,6 +307,16 @@ func (h *RequestHandler) processRemainingCallsHeader(response *http.Response, to
 	}
 }
 
+// assumes the caller holds the token's lock
+func (h *RequestHandler) processResetTimestampHeader(response *http.Response, token *tokenInUse) {
+	resetTimestamp, err := getHeaderIntValue(response, resetTimestampHeader)
+	if err == nil {
+		if token.resetTimestamp > resetTimestamp {
+			token.resetTimestamp = resetTimestamp
+		}
+	}
+}
+
 // assumes that the caller holds the token's lock
 func (t *tokenInUse) updateNextRemainingCallsReportingThreshold() {
 	t.nextRemainingCallsReportingThreshold = t.remainingCalls - remainingCallsReportingInterval
@@ -300,12 +330,12 @@ func (t *tokenInUse) redacted() string {
 	return fmt.Sprintf("ending in %q", t.Token[len(t.Token)-6:])
 }
 
-func getHeaderIntValue(response *http.Response, key string) (int, error) {
+func getHeaderIntValue(response *http.Response, key string) (int64, error) {
 	strValue := response.Header.Get(key)
 	if strValue == "" {
 		return 0, errors.Errorf("No header %q", key)
 	}
-	value, err := strconv.Atoi(strValue)
+	value, err := strconv.ParseInt(strValue, 10, 64)
 	if err != nil {
 		return 0, errors.Wrapf(err, "Unable to convert value %q for header %q into int", strValue, key)
 	}

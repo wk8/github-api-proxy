@@ -1,16 +1,14 @@
 package main
 
-// TODO wkpo reorder
 import (
 	"io/ioutil"
 	"net/url"
 
-	"github.com/wk8/github-api-proxy/pkg/types"
-
-	tokenpools "github.com/wk8/github-api-proxy/pkg/token-pools"
-
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v3"
+
+	tokenpools "github.com/wk8/github-api-proxy/pkg/token-pools"
+	"github.com/wk8/github-api-proxy/pkg/types"
 )
 
 const defaultUpstreamBaseURL = "https://api.github.com"

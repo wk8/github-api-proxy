@@ -429,6 +429,82 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 		assert.True(t, countsPerToken[dummyToken] < 260)
 		assert.Equal(t, nRequests, countsPerToken[dummyToken]+countsPerToken[nextToken])
 	})
+
+	t.Run("it stops using tokens when too close to their reset timestamp, based on the response headers", func(t *testing.T) {
+		mockController := gomock.NewController(t)
+		defer mockController.Finish()
+		tokenPool := mock_token_pools.NewMockTokenPoolStorageBackend(mockController)
+
+		dummyToken := "ohlebeautoken"
+		nextToken := "encoreplusbeau"
+
+		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
+			Token:             dummyToken,
+			ExpectedRateLimit: 1000,
+		}, nil)
+		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
+			Token:             nextToken,
+			ExpectedRateLimit: 10,
+		}, nil)
+
+		handler := NewRequestHandler(githubUpstream.urlStruct(), tokenPool)
+
+		// a fist request, that says it resets in 30 secs
+		resetIn30Secs := timeNowUnix() + 30
+		request, err := githubUpstream.buildRequest(githubUpstream.withResponseHeaders(resetTimestampHeader, strconv.FormatInt(resetIn30Secs, 10)))
+		require.NoError(t, err)
+		response, body, ok := assertHandleRequestSuccessful(t, handler, request, http.StatusOK)
+		require.True(t, ok)
+		assert.Equal(t, "pong", body)
+		assertAuthHeaderMatchesToken(t, dummyToken, response.Header.Get(receivedAuthHeader))
+
+		// let's make another request, that should make the handler request a new token from the pool
+		request, err = githubUpstream.buildRequest()
+		require.NoError(t, err)
+		response, body, ok = assertHandleRequestSuccessful(t, handler, request, http.StatusOK)
+		require.True(t, ok)
+		assert.Equal(t, "pong", body)
+		assertAuthHeaderMatchesToken(t, nextToken, response.Header.Get(receivedAuthHeader))
+	})
+
+	t.Run("if the response headers don't include a reset timestamp, it keeps track of"+
+		" when the token was checked out, and stops using it when too close to the reset", func(t *testing.T) {
+		mockController := gomock.NewController(t)
+		defer mockController.Finish()
+		tokenPool := mock_token_pools.NewMockTokenPoolStorageBackend(mockController)
+
+		dummyToken := "ohlebeautoken"
+		nextToken := "encoreplusbeau"
+
+		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
+			Token:             dummyToken,
+			ExpectedRateLimit: 1000,
+		}, nil)
+		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
+			Token:             nextToken,
+			ExpectedRateLimit: 10,
+		}, nil)
+
+		handler := NewRequestHandler(githubUpstream.urlStruct(), tokenPool)
+
+		defer withTimeMock(t, 1000, 4540, 4540)()
+
+		// first request
+		request, err := githubUpstream.buildRequest()
+		require.NoError(t, err)
+		response, body, ok := assertHandleRequestSuccessful(t, handler, request, http.StatusOK)
+		require.True(t, ok)
+		assert.Equal(t, "pong", body)
+		assertAuthHeaderMatchesToken(t, dummyToken, response.Header.Get(receivedAuthHeader))
+
+		// second request is 59 minutes later, shouldn't use the same token
+		request, err = githubUpstream.buildRequest()
+		require.NoError(t, err)
+		response, body, ok = assertHandleRequestSuccessful(t, handler, request, http.StatusOK)
+		require.True(t, ok)
+		assert.Equal(t, "pong", body)
+		assertAuthHeaderMatchesToken(t, nextToken, response.Header.Get(receivedAuthHeader))
+	})
 }
 
 func TestRequestHandler_HandleGithubAPIRequest(t *testing.T) {
@@ -780,4 +856,20 @@ type failingTransport struct{}
 
 func (f failingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return nil, failingTransportError
+}
+
+// returns a function to cleanup
+func withTimeMock(t *testing.T, times ...int64) func() {
+	backup := timeNowUnix
+
+	nextIndex := -1
+	timeNowUnix = func() int64 {
+		nextIndex++
+		require.True(t, nextIndex < len(times))
+		return times[nextIndex]
+	}
+
+	return func() {
+		timeNowUnix = backup
+	}
 }
