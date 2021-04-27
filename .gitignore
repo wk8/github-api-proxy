@@ -1,5 +1,5 @@
 config.yml
 
-/github-api-proxy
+/github-api-proxy*
 /pkg/internal/mock_pkg
 /coverage.out
