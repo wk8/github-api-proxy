@@ -95,6 +95,8 @@ func NewRequestHandler(githubURL *url.URL, tokenPool token_pools.TokenPoolStorag
 }
 
 func (h *RequestHandler) ProxyRequest(request *http.Request) (response *http.Response, err error) {
+	log.Debugf("Proxy-ing %s request to %v", request.Method, request.URL)
+
 	return h.proxyRequest(request, false)
 }
 
@@ -114,6 +116,8 @@ func (h *RequestHandler) HandleGithubAPIRequest(writer http.ResponseWriter, requ
 }
 
 func (h *RequestHandler) handleRequest(writer http.ResponseWriter, request *http.Request, isKnownGithubAPIRequest bool) {
+	log.Debugf("Handling %s request to %v", request.Method, request.URL)
+
 	response, err := h.proxyRequest(request, isKnownGithubAPIRequest)
 
 	if err != nil {
