@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wk8/github-api-proxy/pkg/types"
 
+	"github.com/wk8/github-api-proxy/pkg/internal"
 	mock_token_pools "github.com/wk8/github-api-proxy/pkg/internal/mock_pkg"
 )
 
@@ -42,9 +43,12 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 
 		dummyToken := "ohlebeautoken"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 1000,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 1000,
+			},
+			RemainingCalls: 1000,
 		}, nil)
 
 		request, err := githubUpstream.buildRequest(githubUpstream.withResponseHeaders(rateLimitHeader, "1000"))
@@ -64,9 +68,12 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 
 		dummyToken := "ohlebeautoken"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 100,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 100,
+			},
+			RemainingCalls: 100,
 		}, nil)
 		tokenPool.EXPECT().UpdateTokenRateLimit(dummyToken, 1000)
 
@@ -87,9 +94,12 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 
 		dummyToken := "ohlebeautoken"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 1000,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 1000,
+			},
+			RemainingCalls: 1000,
 		}, nil)
 		remainingCallsStart := 1000
 		remainingCallsStop := 790
@@ -117,9 +127,12 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 
 		dummyToken := "ohlebeautoken"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 111,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 111,
+			},
+			RemainingCalls: 111,
 		}, nil)
 		tokenPool.EXPECT().UpdateTokenUsage(dummyToken, 61)
 		tokenPool.EXPECT().UpdateTokenUsage(dummyToken, 11)
@@ -146,14 +159,20 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 		dummyToken := "ohlebeautoken"
 		nextToken := "encoreplusbeau"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 10,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 10,
+			},
+			RemainingCalls: 10,
 		}, nil)
 		tokenPool.EXPECT().UpdateTokenUsage(dummyToken, 0)
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             nextToken,
-			ExpectedRateLimit: 10,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             nextToken,
+				ExpectedRateLimit: 10,
+			},
+			RemainingCalls: 10,
 		}, nil)
 
 		handler := NewRequestHandler(githubUpstream.urlStruct(), tokenPool)
@@ -186,14 +205,20 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 		dummyToken := "ohlebeautoken"
 		nextToken := "encoreplusbeau"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 10,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 10,
+			},
+			RemainingCalls: 10,
 		}, nil)
 		tokenPool.EXPECT().UpdateTokenUsage(dummyToken, 0)
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             nextToken,
-			ExpectedRateLimit: 10,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             nextToken,
+				ExpectedRateLimit: 10,
+			},
+			RemainingCalls: 10,
 		}, nil)
 
 		handler := NewRequestHandler(githubUpstream.urlStruct(), tokenPool)
@@ -226,13 +251,19 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 		dummyToken := "ohlebeautoken"
 		nextToken := "encoreplusbeau"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 1000,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 1000,
+			},
+			RemainingCalls: 1000,
 		}, nil)
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             nextToken,
-			ExpectedRateLimit: 1000,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             nextToken,
+				ExpectedRateLimit: 1000,
+			},
+			RemainingCalls: 1000,
 		}, nil)
 
 		githubUpstream.resetRequestsCount()
@@ -257,9 +288,12 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 
 		dummyToken := "ohlebeautoken"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 1000,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 1000,
+			},
+			RemainingCalls: 1000,
 		}, nil)
 
 		githubUpstream.resetRequestsCount()
@@ -375,16 +409,22 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 		nextToken := "encoreplusbeau"
 		bothTokens := []string{dummyToken, nextToken}
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 250,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 250,
+			},
+			RemainingCalls: 250,
 		}, nil)
 		for remaining := 200; remaining >= 0; remaining -= remainingCallsReportingInterval {
 			tokenPool.EXPECT().UpdateTokenUsage(dummyToken, remaining)
 		}
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             nextToken,
-			ExpectedRateLimit: 250,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             nextToken,
+				ExpectedRateLimit: 250,
+			},
+			RemainingCalls: 250,
 		}, nil)
 		for remaining := 200; remaining >= remainingCallsReportingInterval; remaining -= remainingCallsReportingInterval {
 			tokenPool.EXPECT().UpdateTokenUsage(nextToken, remaining)
@@ -438,19 +478,25 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 		dummyToken := "ohlebeautoken"
 		nextToken := "encoreplusbeau"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 1000,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 1000,
+			},
+			RemainingCalls: 1000,
 		}, nil)
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             nextToken,
-			ExpectedRateLimit: 10,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             nextToken,
+				ExpectedRateLimit: 10,
+			},
+			RemainingCalls: 10,
 		}, nil)
 
 		handler := NewRequestHandler(githubUpstream.urlStruct(), tokenPool)
 
 		// a fist request, that says it resets in 30 secs
-		resetIn30Secs := timeNowUnix() + 30
+		resetIn30Secs := internal.TimeNowUnix() + 30
 		request, err := githubUpstream.buildRequest(githubUpstream.withResponseHeaders(resetTimestampHeader, strconv.FormatInt(resetIn30Secs, 10)))
 		require.NoError(t, err)
 		response, body, ok := assertHandleRequestSuccessful(t, handler, request, http.StatusOK)
@@ -476,18 +522,24 @@ func TestRequestHandler_ProxyRequest(t *testing.T) {
 		dummyToken := "ohlebeautoken"
 		nextToken := "encoreplusbeau"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 1000,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 1000,
+			},
+			RemainingCalls: 1000,
 		}, nil)
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             nextToken,
-			ExpectedRateLimit: 10,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             nextToken,
+				ExpectedRateLimit: 10,
+			},
+			RemainingCalls: 10,
 		}, nil)
 
 		handler := NewRequestHandler(githubUpstream.urlStruct(), tokenPool)
 
-		defer withTimeMock(t, 1000, 4540, 4540)()
+		defer internal.WithTimeMock(t, 1000, 4540, 4540)()
 
 		// first request
 		request, err := githubUpstream.buildRequest()
@@ -530,9 +582,12 @@ func TestRequestHandler_HandleGithubAPIRequest(t *testing.T) {
 
 		dummyToken := "ohlebeautoken"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 1000,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 1000,
+			},
+			RemainingCalls: 1000,
 		}, nil)
 
 		reqBody := "hey you"
@@ -569,9 +624,12 @@ func TestRequestHandler_HandleGithubAPIRequest(t *testing.T) {
 
 		dummyToken := "ohlebeautoken"
 
-		tokenPool.EXPECT().CheckOutToken().Return(&types.TokenSpec{
-			Token:             dummyToken,
-			ExpectedRateLimit: 1000,
+		tokenPool.EXPECT().CheckOutToken().Return(&types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             dummyToken,
+				ExpectedRateLimit: 1000,
+			},
+			RemainingCalls: 1000,
 		}, nil)
 
 		request, err := proxy.buildRequest()
@@ -856,20 +914,4 @@ type failingTransport struct{}
 
 func (f failingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return nil, failingTransportError
-}
-
-// returns a function to cleanup
-func withTimeMock(t *testing.T, times ...int64) func() {
-	backup := timeNowUnix
-
-	index := -1
-	timeNowUnix = func() int64 {
-		index++
-		require.True(t, index < len(times))
-		return times[index]
-	}
-
-	return func() {
-		timeNowUnix = backup
-	}
 }

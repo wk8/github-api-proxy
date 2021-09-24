@@ -17,12 +17,13 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
+	"github.com/wk8/github-api-proxy/pkg/internal"
 	token_pools "github.com/wk8/github-api-proxy/pkg/token-pools"
 	"github.com/wk8/github-api-proxy/pkg/types"
 )
 
 const (
-	defaultMaxGithubRetries = 3
+	defaultMaxGithubRetries = 25
 
 	basicAuthPassword = "x-oauth-basic"
 	// every time a handler uses up that many API calls, it will update the token pool
@@ -34,15 +35,10 @@ const (
 	throttledRequestErrorMessage = "API rate limit exceeded"
 
 	proxyErrorResponseBody = "unexpected proxy error"
-
-	// we don't use token this close to their reset timestamp, to allow for some clock drift between servers
-	resetIntervalErrorMarginSeconds = int64(60)
 )
 
-// easier to mock, for tests
-var timeNowUnix = func() int64 {
-	return time.Now().Unix()
-}
+// we don't use token this close to their reset timestamp, to allow for some clock drift between servers
+var resetIntervalErrorMarginSeconds = int64((60 * time.Second).Seconds())
 
 type RequestHandlerI interface {
 	// ProxyRequest should take any request, transparently proxy any request that's not made
@@ -75,9 +71,7 @@ type RequestHandler struct {
 }
 
 type tokenInUse struct {
-	*types.TokenSpec
-	// how many API calls remain for the current token
-	remainingCalls int
+	*types.Token
 	// when the remaining calls count gets below this threshold, we need to report to the pool
 	nextRemainingCallsReportingThreshold int
 	// once past the reset, we need to stop using this token, let the pool check it back in on its own,
@@ -180,6 +174,14 @@ func (h *RequestHandler) proxyGithubAPIRequest(request *http.Request) (response 
 			break
 		}
 	}
+
+	if err == nil && isThrottled {
+		err = errors.Errorf("still throttled after %d attempts", maxRetries)
+	}
+	if err != nil {
+		log.Errorf("Unable to proxy %s Github request to %v: %v", request.Method, request.URL, err)
+	}
+
 	return
 }
 
@@ -190,7 +192,7 @@ func (h *RequestHandler) makeGithubAPIRequest(request *http.Request) (response *
 		return
 	}
 
-	request.SetBasicAuth(token.Token, basicAuthPassword)
+	request.SetBasicAuth(token.Token.Token, basicAuthPassword)
 
 	response, err = h.makeRequest(request)
 	if err != nil {
@@ -212,7 +214,7 @@ func (h *RequestHandler) makeGithubAPIRequest(request *http.Request) (response *
 			h.processResetTimestampHeader(response, token)
 		}
 
-		tokenExhausted = isThrottled || token.remainingCalls <= 0
+		tokenExhausted = isThrottled || token.RemainingCalls <= 0
 	}()
 
 	if tokenExhausted {
@@ -231,7 +233,7 @@ func (h *RequestHandler) ensureToken() (*tokenInUse, error) {
 	defer h.currentTokenMutex.Unlock()
 
 	if h.currentToken != nil {
-		if timeNowUnix() >= h.currentToken.resetTimestamp-resetIntervalErrorMarginSeconds {
+		if internal.TimeNowUnix() >= h.currentToken.resetTimestamp-resetIntervalErrorMarginSeconds {
 			// can't use this token any more, the pool will check it back in shortly
 			h.currentToken = nil
 		} else {
@@ -248,9 +250,8 @@ func (h *RequestHandler) ensureToken() (*tokenInUse, error) {
 	}
 
 	h.currentToken = &tokenInUse{
-		TokenSpec:      token,
-		remainingCalls: token.ExpectedRateLimit,
-		resetTimestamp: timeNowUnix() + int64(token_pools.ResetInterval.Seconds()),
+		Token:          token,
+		resetTimestamp: internal.TimeNowUnix() + int64(token_pools.ResetInterval.Seconds()),
 	}
 	// no need to hold that token's lock, we just created it, and no one can
 	// access it until we release the handler's lock
@@ -278,7 +279,7 @@ func (h *RequestHandler) processRateLimitHeader(response *http.Response, token *
 		log.Warnf("Unexpected rate limit for token %s: expected %d, real limit is %d",
 			token.redacted(), token.ExpectedRateLimit, rateLimit)
 
-		if err := h.tokenPool.UpdateTokenRateLimit(token.Token, rateLimit); err == nil {
+		if err := h.tokenPool.UpdateTokenRateLimit(token.Token.Token, rateLimit); err == nil {
 			token.ExpectedRateLimit = rateLimit
 		} else {
 			// again, just best effort
@@ -292,16 +293,16 @@ func (h *RequestHandler) processRemainingCallsHeader(response *http.Response, to
 	remainingCalls, err := getHeaderIntValue(response, remainingCallsHeader)
 
 	if err == nil {
-		token.remainingCalls = int(remainingCalls)
+		token.RemainingCalls = int(remainingCalls)
 	} else {
 		// no remaining calls header in the response, let's try a best effort approach...
 		log.Errorf("Unable to get remaining calls for token %s: %v", token.redacted(), err)
 
-		token.remainingCalls--
+		token.RemainingCalls--
 	}
 
-	if token.remainingCalls >= 0 && token.remainingCalls <= token.nextRemainingCallsReportingThreshold {
-		if err := h.tokenPool.UpdateTokenUsage(token.Token, token.remainingCalls); err == nil {
+	if token.RemainingCalls >= 0 && token.RemainingCalls <= token.nextRemainingCallsReportingThreshold {
+		if err := h.tokenPool.UpdateTokenUsage(token.Token.Token, token.RemainingCalls); err == nil {
 			token.updateNextRemainingCallsReportingThreshold()
 		} else {
 			// best effort here too
@@ -323,7 +324,7 @@ func (h *RequestHandler) processResetTimestampHeader(response *http.Response, to
 
 // assumes that the caller holds the token's lock
 func (t *tokenInUse) updateNextRemainingCallsReportingThreshold() {
-	t.nextRemainingCallsReportingThreshold = t.remainingCalls - remainingCallsReportingInterval
+	t.nextRemainingCallsReportingThreshold = t.RemainingCalls - remainingCallsReportingInterval
 	if t.nextRemainingCallsReportingThreshold < 0 {
 		t.nextRemainingCallsReportingThreshold = 0
 	}
@@ -331,7 +332,7 @@ func (t *tokenInUse) updateNextRemainingCallsReportingThreshold() {
 
 // returns a redacted token, safe for logging
 func (t *tokenInUse) redacted() string {
-	return fmt.Sprintf("ending in %q", t.Token[len(t.Token)-6:])
+	return fmt.Sprintf("ending in %q", t.Token.Token[len(t.Token.Token)-6:])
 }
 
 func getHeaderIntValue(response *http.Response, key string) (int64, error) {

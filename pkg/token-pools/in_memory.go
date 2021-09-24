@@ -1,6 +1,7 @@
 package token_pools
 
 import (
+	"math/rand"
 	"sync"
 	"time"
 
@@ -15,23 +16,31 @@ const memory = "memory"
 func init() {
 	registerFactory(
 		memory,
-		func(config interface{}) (TokenPoolStorageBackend, error) {
-			if config != nil {
-				return nil, errors.Errorf("memory pool tokens don't accept any config")
+		func(rawConfig interface{}) (TokenPoolStorageBackend, error) {
+			randomize := false
+			if rawConfig != nil {
+				config, ok := rawConfig.(*inMemoryTokenPoolConfig)
+				if !ok {
+					return nil, errors.Errorf("not a valid in-memory pool config")
+				}
+				randomize = config.Randomize
 			}
-			return newTokenPoolMemoryStorage(), nil
+
+			return newInMemoryTokenPool(randomize), nil
 		},
 		func() interface{} {
-			return nil
+			return &inMemoryTokenPoolConfig{}
 		},
 	)
 }
 
 // inMemoryTokenPool is an in-memory, local implementation of TokenPoolStorageBackend
 type inMemoryTokenPool struct {
-	tokens map[string]*tokenWithRemainingCount
+	randomize bool
 
-	// each token in data appears exactly once in either of these 2 maps, at all times
+	tokens map[string]*types.Token
+
+	// each token in `tokens` appears exactly once in either of these 2 maps, at all times
 	// checkedInTokens is simply used as a set
 	checkedInTokens map[string]bool
 	// checkedOutTokens maps tokens to when they were checked out (`time.Time`s)
@@ -42,14 +51,17 @@ type inMemoryTokenPool struct {
 
 var _ TokenPoolStorageBackend = &inMemoryTokenPool{}
 
-type tokenWithRemainingCount struct {
-	*types.TokenSpec
-	remaining int
+type inMemoryTokenPoolConfig struct {
+	// randomization allows for less conflicts when running this proxy
+	// as a distributed service but still using in memory token pools
+	// - but distributed deployments really should be distributed pools!
+	Randomize bool `yaml:"randomize"`
 }
 
-func newTokenPoolMemoryStorage() *inMemoryTokenPool {
+func newInMemoryTokenPool(randomize bool) *inMemoryTokenPool {
 	return &inMemoryTokenPool{
-		tokens:           make(map[string]*tokenWithRemainingCount),
+		randomize:        randomize,
+		tokens:           make(map[string]*types.Token),
 		checkedInTokens:  make(map[string]bool),
 		checkedOutTokens: orderedmap.New(),
 	}
@@ -63,9 +75,9 @@ func (t *inMemoryTokenPool) EnsureTokensAre(tokens ...*types.TokenSpec) error {
 
 	for _, tokenSpec := range tokens {
 		if t.tokens[tokenSpec.Token] == nil {
-			t.tokens[tokenSpec.Token] = &tokenWithRemainingCount{
-				TokenSpec: tokenSpec,
-				remaining: tokenSpec.ExpectedRateLimit,
+			t.tokens[tokenSpec.Token] = &types.Token{
+				TokenSpec:      *tokenSpec,
+				RemainingCalls: tokenSpec.ExpectedRateLimit,
 			}
 
 			t.checkedInTokens[tokenSpec.Token] = true
@@ -85,23 +97,48 @@ func (t *inMemoryTokenPool) EnsureTokensAre(tokens ...*types.TokenSpec) error {
 	return nil
 }
 
-func (t *inMemoryTokenPool) CheckOutToken() (*types.TokenSpec, error) {
+func (t *inMemoryTokenPool) CheckOutToken() (*types.Token, error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	token := ""
-	for checkedInToken := range t.checkedInTokens {
-		token = checkedInToken
-		break
+
+	if len(t.checkedInTokens) != 0 {
+		// we have checked-in tokens
+		randIndex := 0
+		if t.randomize {
+			randIndex = rand.Int() % len(t.checkedInTokens)
+		}
+
+		i := 0
+		for checkedInToken := range t.checkedInTokens {
+			if i == randIndex {
+				token = checkedInToken
+				break
+			}
+			i++
+		}
+
+		delete(t.checkedInTokens, token)
+		t.checkedOutTokens.Set(token, time.Now())
+	} else {
+		// no checked-in token - if we have any checked-out tokens,
+		// select the one with the most calls remaining, if any
+		currentMax := 0
+
+		for pair := t.checkedOutTokens.Oldest(); pair != nil; pair = pair.Next() {
+			checkedOutToken := pair.Key.(string)
+			if t.tokens[checkedOutToken].RemainingCalls > currentMax {
+				token = checkedOutToken
+			}
+		}
 	}
+
 	if token == "" {
 		return nil, nil
 	}
 
-	delete(t.checkedInTokens, token)
-	t.checkedOutTokens.Set(token, time.Now())
-
-	return t.tokens[token].TokenSpec, nil
+	return t.tokens[token], nil
 }
 
 func (t *inMemoryTokenPool) UpdateTokenUsage(token string, remaining int) error {
@@ -109,7 +146,7 @@ func (t *inMemoryTokenPool) UpdateTokenUsage(token string, remaining int) error 
 	defer t.mutex.Unlock()
 
 	if withCount := t.tokens[token]; withCount != nil {
-		withCount.remaining = remaining
+		withCount.RemainingCalls = remaining
 	}
 	return nil
 }
@@ -144,7 +181,7 @@ func (t *inMemoryTokenPool) CheckInTokens(gracePeriod time.Duration) error {
 	for _, token := range tokensToCheckIn {
 		t.checkedOutTokens.Delete(token)
 		t.checkedInTokens[token] = true
-		t.tokens[token].remaining = t.tokens[token].ExpectedRateLimit
+		t.tokens[token].RemainingCalls = t.tokens[token].ExpectedRateLimit
 	}
 
 	return nil
@@ -156,7 +193,7 @@ func (t *inMemoryTokenPool) EstimateTotalRemainingCalls() (int, error) {
 
 	total := 0
 	for _, withCount := range t.tokens {
-		total += withCount.remaining
+		total += withCount.RemainingCalls
 	}
 	return total, nil
 }

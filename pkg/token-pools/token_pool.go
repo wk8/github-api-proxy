@@ -24,10 +24,13 @@ type TokenPoolStorageBackend interface {
 	EnsureTokensAre(tokens ...*types.TokenSpec) error
 
 	// CheckOutToken checks out a token with its full hourly quota available, if there are any.
-	// The storage should keep track of when the token was checked out, and mark it as checked out.
+	// If there are no token available that hasn't been checked out yet, it should check out the token
+	// that has the most calls remaining, if any.
+	// The storage should keep track of when the token was checked out, and mark it as checked out
+	// (if it was already checked out, the checked-out timestamp should be kept to its original value).
 	// Errors are only for real storage errors; if the storage is working as intended, but simply
 	// has no remaining token, it should just reply (nil, nil).
-	CheckOutToken() (*types.TokenSpec, error)
+	CheckOutToken() (*types.Token, error)
 
 	// UpdateTokenUsage should update a given checked-out token's count of remaining calls.
 	// Trying to update a token that's unknown to the storage shouldn't yield an error, as this
@@ -35,7 +38,7 @@ type TokenPoolStorageBackend interface {
 	UpdateTokenUsage(token string, remaining int) error
 
 	// UpdateTokenRateLimit should update a given token's rate limit, in case the config gave
-	// a wrong value for it
+	// a wrong value for it.
 	// Same as UpdateTokenUsage, trying to update a token that's unknown to the storage shouldn't yield an error.
 	UpdateTokenRateLimit(token string, rateLimit int) error
 

@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/wk8/github-api-proxy/pkg/internal"
 	"github.com/wk8/github-api-proxy/pkg/types"
 )
 
@@ -20,9 +21,9 @@ func init() {
 		func(rawConfig interface{}) (TokenPoolStorageBackend, error) {
 			config, ok := rawConfig.(*mysqlTokenPoolConfig)
 			if !ok {
-				return nil, errors.Errorf("not a mysql config")
+				return nil, errors.Errorf("not a valid mysql pool config")
 			}
-			return newMysqlTokenPoolConfig(config, false)
+			return newMysqlTokenPool(config, false)
 		},
 		func() interface{} {
 			return &mysqlTokenPoolConfig{
@@ -36,14 +37,7 @@ type mysqlTokenPool struct {
 	*gorm.DB
 }
 
-var (
-	_ TokenPoolStorageBackend = &mysqlTokenPool{}
-
-	// easier to mock, for tests
-	timeNowUnix = func() int64 {
-		return time.Now().Unix()
-	}
-)
+var _ TokenPoolStorageBackend = &mysqlTokenPool{}
 
 type mysqlTokenPoolConfig struct {
 	Host     string `yaml:"host"`
@@ -55,13 +49,13 @@ type mysqlTokenPoolConfig struct {
 
 type dbToken struct {
 	Token                 string `gorm:"primarykey;type:varchar(40);not null"`
-	RateLimit             int
-	RemainingCalls        int   `gorm:"index:checked_out_remaining_calls_idx,priority:2"`
-	CheckedOutAtTimestamp int64 `gorm:"index:checked_out_remaining_calls_idx,priority:1"`
+	RateLimit             int    `gorm:"not null"`
+	RemainingCalls        int    `gorm:"index:remaining_calls_checked_out_idx,priority:1;not null"`
+	CheckedOutAtTimestamp int64  `gorm:"index:remaining_calls_checked_out_idx,priority:2;index:checked_out_idx;not null"`
 }
 
 // debug prints debug statements for queries; comes in handy when debugging
-func newMysqlTokenPoolConfig(config *mysqlTokenPoolConfig, debug bool) (*mysqlTokenPool, error) {
+func newMysqlTokenPool(config *mysqlTokenPoolConfig, debug bool) (*mysqlTokenPool, error) {
 	// see https://github.com/go-sql-driver/mysql#dsn-data-source-name
 	dbDSN := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8&parseTime=True&loc=Local",
 		config.User, config.Password, config.Host, config.Port, config.DBName)
@@ -109,11 +103,15 @@ func (m *mysqlTokenPool) EnsureTokensAre(tokens ...*types.TokenSpec) error {
 	})
 }
 
-func (m *mysqlTokenPool) CheckOutToken() (spec *types.TokenSpec, err error) {
+func (m *mysqlTokenPool) CheckOutToken() (t *types.Token, err error) {
 	err = m.withTableLock(func(transaction *gorm.DB) error {
 		var token dbToken
+		query := transaction.
+			Select("*, RAND() as rand").
+			Where("remaining_calls > 0").
+			Order("remaining_calls DESC, checked_out_at_timestamp ASC, rand").
+			First(&token)
 
-		query := transaction.Where("remaining_calls > 0 AND checked_out_at_timestamp = 0").First(&token)
 		if err := query.Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return nil
@@ -121,14 +119,19 @@ func (m *mysqlTokenPool) CheckOutToken() (spec *types.TokenSpec, err error) {
 			return errors.Wrap(err, "unable to query tokens")
 		}
 
-		token.CheckedOutAtTimestamp = timeNowUnix()
-		if err := transaction.Save(&token).Error; err != nil {
-			return errors.Wrap(err, "unable to update token")
+		if token.CheckedOutAtTimestamp == 0 {
+			token.CheckedOutAtTimestamp = internal.TimeNowUnix()
+			if err := transaction.Save(&token).Error; err != nil {
+				return errors.Wrap(err, "unable to update token")
+			}
 		}
 
-		spec = &types.TokenSpec{
-			Token:             token.Token,
-			ExpectedRateLimit: token.RateLimit,
+		t = &types.Token{
+			TokenSpec: types.TokenSpec{
+				Token:             token.Token,
+				ExpectedRateLimit: token.RateLimit,
+			},
+			RemainingCalls: token.RemainingCalls,
 		}
 
 		return nil
@@ -145,7 +148,7 @@ func (m *mysqlTokenPool) UpdateTokenRateLimit(token string, rateLimit int) error
 }
 
 func (m *mysqlTokenPool) CheckInTokens(gracePeriod time.Duration) error {
-	cutoff := timeNowUnix() - int64((ResetInterval + gracePeriod).Seconds())
+	cutoff := internal.TimeNowUnix() - int64((ResetInterval + gracePeriod).Seconds())
 	return m.Model(&dbToken{}).Where("checked_out_at_timestamp < ?", cutoff).Updates(map[string]interface{}{
 		"remaining_calls":          gorm.Expr("rate_limit"),
 		"checked_out_at_timestamp": 0,
