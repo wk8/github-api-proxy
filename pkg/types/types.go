@@ -6,6 +6,11 @@ type TokenSpec struct {
 	ExpectedRateLimit int `yaml:"expected_rate_limit"`
 }
 
+type Token struct {
+	TokenSpec
+	RemainingCalls int
+}
+
 type TLSConfig struct {
 	CrtPath string `yaml:"crt_path"`
 	KeyPath string `yaml:"key_path"`

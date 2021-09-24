@@ -2,7 +2,6 @@ package token_pools
 
 import (
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wk8/github-api-proxy/pkg/internal"
 	"github.com/wk8/github-api-proxy/pkg/types"
 )
 
@@ -29,7 +29,7 @@ func TestMysqlTokenPool(t *testing.T) {
 		DBName:   "github_api_proxy_dev",
 	}
 
-	pool, err := newMysqlTokenPoolConfig(config, true)
+	pool, err := newMysqlTokenPool(config, true)
 	assert.NoError(t, err)
 
 	t.Run("EnsureTokens", func(t *testing.T) {
@@ -50,7 +50,7 @@ func TestMysqlTokenPool(t *testing.T) {
 	t.Run("CheckOutToken with 1 available token", func(t *testing.T) {
 		truncateTable(t, pool)
 
-		defer withTimeMock(t, 1212)()
+		defer internal.WithTimeMock(t, 1212)()
 
 		require.NoError(t, pool.EnsureTokensAre(generateTokenSpecs('a', 'b', 'c')...))
 		tokens := requireDBContains(t, pool, []int64{'a'}, []int64{'b'}, []int64{'c'})
@@ -60,10 +60,10 @@ func TestMysqlTokenPool(t *testing.T) {
 		require.NoError(t, pool.Save(tokens[0]).Error)
 		require.NoError(t, pool.Save(tokens[2]).Error)
 
-		spec, err := pool.CheckOutToken()
+		token, err := pool.CheckOutToken()
 		assert.NoError(t, err)
-		if assert.NotNil(t, spec) {
-			assert.Equal(t, generateTokenSpec('b'), spec)
+		if assert.NotNil(t, token) {
+			assert.Equal(t, *generateTokenSpec('b'), token.TokenSpec)
 		}
 
 		requireDBContains(t, pool, []int64{'a', 0}, []int64{'b', defaultRateLimit, 1212}, []int64{'c', defaultRateLimit, 100})
@@ -75,11 +75,11 @@ func TestMysqlTokenPool(t *testing.T) {
 		require.NoError(t, pool.EnsureTokensAre(generateTokenSpecs('a', 'b', 'c')...))
 		requireDBContains(t, pool, []int64{'a'}, []int64{'b'}, []int64{'c'})
 
-		spec, err := pool.CheckOutToken()
+		token, err := pool.CheckOutToken()
 		assert.NoError(t, err)
-		if assert.NotNil(t, spec) {
-			assert.Equal(t, defaultRateLimit, spec.ExpectedRateLimit)
-			assert.Contains(t, []string{tokenFromChar('a'), tokenFromChar('b'), tokenFromChar('c')}, spec.Token)
+		if assert.NotNil(t, token) {
+			assert.Equal(t, defaultRateLimit, token.ExpectedRateLimit)
+			assert.Contains(t, []string{tokenFromChar('a'), tokenFromChar('b'), tokenFromChar('c')}, token.Token)
 		}
 	})
 
@@ -92,9 +92,9 @@ func TestMysqlTokenPool(t *testing.T) {
 		tokens[0].RemainingCalls = 0
 		require.NoError(t, pool.Save(tokens[0]).Error)
 
-		spec, err := pool.CheckOutToken()
+		token, err := pool.CheckOutToken()
 		assert.NoError(t, err)
-		assert.Nil(t, spec)
+		assert.Nil(t, token)
 
 		requireDBContains(t, pool, []int64{'a', 0})
 	})
@@ -102,9 +102,9 @@ func TestMysqlTokenPool(t *testing.T) {
 	t.Run("CheckOutToken with no token at all", func(t *testing.T) {
 		truncateTable(t, pool)
 
-		spec, err := pool.CheckOutToken()
+		token, err := pool.CheckOutToken()
 		assert.NoError(t, err)
-		assert.Nil(t, spec)
+		assert.Nil(t, token)
 
 		requireDBContains(t, pool)
 	})
@@ -120,7 +120,7 @@ func TestMysqlTokenPool(t *testing.T) {
 
 		require.NoError(t, pool.EnsureTokensAre(generateTokenSpecs(allChars...)...))
 
-		checkedOutTokens := make(chan *types.TokenSpec, n)
+		checkedOutTokens := make(chan *types.Token, n)
 		var wg sync.WaitGroup
 		wg.Add(n)
 		for i := 0; i < n; i++ {
@@ -133,9 +133,9 @@ func TestMysqlTokenPool(t *testing.T) {
 			}()
 		}
 
-		expectedSpecs := make(map[string]*types.TokenSpec)
+		expectedSpecs := make(map[string]types.TokenSpec)
 		for char := 'a'; char < 'a'+int32(n); char++ {
-			spec := &types.TokenSpec{
+			spec := types.TokenSpec{
 				Token:             tokenFromChar(char),
 				ExpectedRateLimit: defaultRateLimit,
 			}
@@ -144,7 +144,9 @@ func TestMysqlTokenPool(t *testing.T) {
 
 		wg.Wait()
 		close(checkedOutTokens)
-		for actualSpec := range checkedOutTokens {
+		for actualToken := range checkedOutTokens {
+			actualSpec := actualToken.TokenSpec
+
 			expectedSpec := expectedSpecs[actualSpec.Token]
 			if assert.NotNil(t, expectedSpec) {
 				delete(expectedSpecs, actualSpec.Token)
@@ -152,6 +154,60 @@ func TestMysqlTokenPool(t *testing.T) {
 			}
 		}
 		assert.Equal(t, 0, len(expectedSpecs))
+	})
+
+	t.Run("Checkout falls back on checked-out tokens if there are no other available", func(t *testing.T) {
+		truncateTable(t, pool)
+
+		require.NoError(t, pool.EnsureTokensAre(generateTokenSpecs('a')...))
+		tokens := requireDBContains(t, pool, []int64{'a'})
+
+		tokens[0].CheckedOutAtTimestamp = 1
+		tokens[0].RemainingCalls = 12
+		require.NoError(t, pool.Save(tokens[0]).Error)
+
+		token, err := pool.CheckOutToken()
+		assert.NoError(t, err)
+		if assert.NotNil(t, token) {
+			assert.Equal(t, tokenFromChar('a'), token.Token)
+		}
+
+		requireDBContains(t, pool, []int64{'a', 12, 1})
+	})
+
+	t.Run("Checkout randomizes checked-in tokens when checking a new one out", func(t *testing.T) {
+		truncateTable(t, pool)
+
+		nCalls := 100
+		// trick the pool into never actually marking anything as checked out
+		defer internal.WithTimeMock(t, make([]int64, nCalls)...)()
+
+		nTokens := 10
+		allChars := make([]rune, 0, nTokens)
+		for char := 'a'; char < 'a'+int32(nTokens); char++ {
+			allChars = append(allChars, char)
+		}
+
+		require.NoError(t, pool.EnsureTokensAre(generateTokenSpecs(allChars...)...))
+
+		nextToken := func() string {
+			token, err := pool.CheckOutToken()
+			require.NoError(t, err)
+			return token.Token
+		}
+
+		counts := make(map[string]int)
+		for i := 0; i < nCalls; i++ {
+			counts[nextToken()]++
+		}
+
+		totalCount := 0
+		for char := 'a'; char < 'a'+int32(nTokens); char++ {
+			totalCount += counts[tokenFromChar(char)]
+		}
+
+		require.Equal(t, nCalls, totalCount)
+		require.Less(t, 1, len(counts))
 	})
 
 	t.Run("UpdateTokenUsage on an existing token", func(t *testing.T) {
@@ -203,7 +259,7 @@ func TestMysqlTokenPool(t *testing.T) {
 		}
 
 		currentTime := 2 * time.Hour
-		defer withTimeMock(t, toSecs(currentTime))()
+		defer internal.WithTimeMock(t, toSecs(currentTime))()
 
 		tokens[0].CheckedOutAtTimestamp = toSecs(currentTime - 30*time.Minute)
 		tokens[1].CheckedOutAtTimestamp = toSecs(currentTime - 61*time.Minute)
@@ -246,29 +302,6 @@ func TestMysqlTokenPool(t *testing.T) {
 }
 
 // Test helpers
-
-const (
-	defaultRateLimit = 5000
-)
-
-func generateTokenSpecs(chars ...rune) []*types.TokenSpec {
-	specs := make([]*types.TokenSpec, len(chars))
-	for i, c := range chars {
-		specs[i] = generateTokenSpec(c)
-	}
-	return specs
-}
-
-func generateTokenSpec(char rune) *types.TokenSpec {
-	return &types.TokenSpec{
-		Token:             tokenFromChar(char),
-		ExpectedRateLimit: defaultRateLimit,
-	}
-}
-
-func tokenFromChar(c rune) string {
-	return strings.Repeat(string(c), 40)
-}
 
 // see hydrateTokenShorthand below for an explanation of the input
 // if successful, returns a list of the tokens in the DB in the order they were provided in expectedTokens
@@ -333,20 +366,4 @@ func hydrateTokenShorthand(t *testing.T, input []int64) *dbToken {
 func truncateTable(t *testing.T, pool *mysqlTokenPool) {
 	require.NoError(t, pool.Where("1 = 1").Delete(&dbToken{}).Error)
 	requireDBContains(t, pool)
-}
-
-// returns a function to cleanup
-func withTimeMock(t *testing.T, times ...int64) func() {
-	backup := timeNowUnix
-
-	index := -1
-	timeNowUnix = func() int64 {
-		index++
-		require.True(t, index < len(times))
-		return times[index]
-	}
-
-	return func() {
-		timeNowUnix = backup
-	}
 }
